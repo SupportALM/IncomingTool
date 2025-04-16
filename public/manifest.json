@@ -1,6 +1,6 @@
 {
-  "name": "Sample Tool",
+  "name": "Incoming Tool",
   "version": "1.0.0",
-  "entry": "https://SupportALM.github.io/sample-tool/remoteEntry.js",
+  "entry": "https://SupportALM.github.io/IncomingTool/remoteEntry.js",
   "exposedModule": "./ToolApp"
 }

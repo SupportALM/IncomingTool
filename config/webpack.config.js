@@ -29,6 +29,10 @@ const { ModuleFederationPlugin } = require("webpack").container;
 
 const createEnvironmentHash = require('./webpack/persistentCache/createEnvironmentHash');
 
+// Read package.json to get dependency versions
+const appPackageJson = require(paths.appPackageJson);
+const dependencies = appPackageJson.dependencies;
+
 // Source maps are resource heavy and can cause out of memory issue for large source files.
 const shouldUseSourceMap = process.env.GENERATE_SOURCEMAP !== 'false';
 
@@ -220,7 +224,9 @@ module.exports = function (webpackEnv) {
       // webpack uses `publicPath` to determine where the app is being served from.
       // It requires a trailing slash, or the file assets will get an incorrect path.
       // We inferred the "public path" (such as / or /my-project) from homepage.
-      publicPath: paths.publicUrlOrPath,
+      // IMPORTANT: Set this to the URL where your built assets will be hosted for production!
+      // For GitHub Pages: 'https://YOUR_GITHUB_USERNAME.github.io/YOUR_REPO_NAME/'
+      publicPath: isEnvProduction ? 'https://SupportALM.github.io/IncomingTool/' : 'auto',
       // Point sourcemap entries to original disk location (format as URL on Windows)
       devtoolModuleFilenameTemplate: isEnvProduction
         ? info =>
@@ -749,12 +755,31 @@ module.exports = function (webpackEnv) {
           },
         }),
       new ModuleFederationPlugin({
-        name: "sampletool",
+        // Must be unique in the shell for module resolution!
+        // Often derived from package.json name
+        name: "incomingtool",
         filename: "remoteEntry.js",
         exposes: {
-          "./ToolApp": "./src/ToolApp",
+          // Update this key/path if you rename ToolApp.tsx or want to expose something else.
+          // The key ('./ToolApp') is what the shell uses to import.
+          './ToolApp': './src/ToolApp',
         },
-        shared: { react: { singleton: true }, "react-dom": { singleton: true } },
+        shared: {
+          // Share react & react-dom, ensuring only ONE copy is loaded in the shell
+          // Singleton is crucial here.
+          // Eager can be used but may slightly increase initial load time of the shell.
+          // react: {         // <-- REMOVED
+          //   singleton: true,
+          //   requiredVersion: dependencies.react,
+          // },
+          // "react-dom": {   // <-- REMOVED
+          //   singleton: true,
+          //   requiredVersion: dependencies["react-dom"],
+          // },
+          // Add any other libraries you want shared between the shell and remotes
+          // Be sure the versions match exactly!
+          // e.g., some_ui_library: { singleton: true, requiredVersion: dependencies.some_ui_library }
+        },
       }),
     ].filter(Boolean),
     // Turn off performance processing because we utilize
