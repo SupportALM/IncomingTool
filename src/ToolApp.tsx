@@ -807,6 +807,7 @@ const ToolApp = () => {
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      console.log('Keydown event in ToolApp:', e.key); // Debug log
       // Don't trigger shortcuts if typing in an input or textarea
       const tag = (e.target as HTMLElement).tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement).isContentEditable) return;
@@ -843,8 +844,8 @@ const ToolApp = () => {
           break;
       }
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
   }, [isAddItemModalOpen, isSettingsModalOpen, selectedItemDetails, reportingIssueItem, addingUpdateItem, resolvingIssueItem]);
 
   return (
