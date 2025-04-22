@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { StockItem, PurchaseStatus, Destination, ItemStatus } from './types';
 
 // Helper component for the info icon (basic tooltip)
@@ -9,27 +9,53 @@ const InfoIcon = ({ text }: { text: string }) => (
 );
 
 interface AddItemFormProps {
-  onSave: (newItem: Omit<StockItem, 'id' | 'currentStatus' | 'dateDelivered' | 'processorNotes' | 'issueDescription'> & { isFlagged: boolean }) => void;
+  onSave: (newItemOrUpdate: Omit<StockItem, 'id' | 'currentStatus' | 'dateDelivered' | 'processorNotes' | 'issueDescription'> & { isFlagged: boolean }) => void;
   onClose: () => void;
+  initialData?: StockItem | null;
 }
 
-const AddItemForm: React.FC<AddItemFormProps> = ({ onSave, onClose }) => {
+const AddItemForm: React.FC<AddItemFormProps> = ({ onSave, onClose, initialData }) => {
+  const isEditing = !!initialData;
+
   // Initialize state for each form field
-  const [purchaseStatus, setPurchaseStatus] = useState<PurchaseStatus>('Purchased');
-  const [deliveryName, setDeliveryName] = useState('');
-  const [productName, setProductName] = useState('');
-  const [quantity, setQuantity] = useState<number | ''>('');
-  const [pricePerItem, setPricePerItem] = useState<number | ''>('');
-  const [orderNumber, setOrderNumber] = useState('');
-  const [orderDate, setOrderDate] = useState(() => new Date().toISOString().split('T')[0]); // Default to today
-  const [seller, setSeller] = useState('');
-  const [isVatRegistered, setIsVatRegistered] = useState<'Yes' | 'No' | 'Unknown'>('Unknown');
-  const [destination, setDestination] = useState<Destination>('');
-  const [asinSku, setAsinSku] = useState('');
-  const [acquisitionNotes, setAcquisitionNotes] = useState('');
-  const [isFlagged, setIsFlagged] = useState(false);
+  const [purchaseStatus, setPurchaseStatus] = useState<PurchaseStatus>(initialData?.purchaseStatus || 'Purchased');
+  const [deliveryName, setDeliveryName] = useState(initialData?.deliveryName || '');
+  const [productName, setProductName] = useState(initialData?.productName || '');
+  const [quantity, setQuantity] = useState<number | ''>(initialData?.quantity || '');
+  const [pricePerItem, setPricePerItem] = useState<number | ''>(initialData?.pricePerItem || '');
+  const [orderNumber, setOrderNumber] = useState(initialData?.orderNumber || '');
+  const [orderDate, setOrderDate] = useState(() => (initialData?.orderDate || new Date().toISOString().split('T')[0]));
+  const [seller, setSeller] = useState(initialData?.seller || '');
+  const [isVatRegistered, setIsVatRegistered] = useState<'Yes' | 'No' | 'Unknown'>(initialData?.isVatRegistered || 'Unknown');
+  const [destination, setDestination] = useState<Destination>(initialData?.destination || '');
+  const [asinSku, setAsinSku] = useState(initialData?.asinSku || '');
+  const [acquisitionNotes, setAcquisitionNotes] = useState(initialData?.acquisitionNotes || '');
+  const [isFlagged, setIsFlagged] = useState(initialData?.isFlagged || false);
 
   const [errors, setErrors] = useState<Record<string, string>>({});
+
+  // Populate state if initialData changes (needed if modal reuses component instance)
+  useEffect(() => {
+    if (initialData) {
+      setPurchaseStatus(initialData.purchaseStatus || 'Purchased');
+      setDeliveryName(initialData.deliveryName || '');
+      setProductName(initialData.productName || '');
+      setQuantity(initialData.quantity || '');
+      setPricePerItem(initialData.pricePerItem || '');
+      setOrderNumber(initialData.orderNumber || '');
+      setOrderDate(initialData.orderDate || new Date().toISOString().split('T')[0]);
+      setSeller(initialData.seller || '');
+      setIsVatRegistered(initialData.isVatRegistered || 'Unknown');
+      setDestination(initialData.destination || '');
+      setAsinSku(initialData.asinSku || '');
+      setAcquisitionNotes(initialData.acquisitionNotes || '');
+      setIsFlagged(initialData.isFlagged || false);
+      setErrors({}); // Clear errors when loading new data
+    } else {
+      // Reset form if initialData becomes null (e.g., switching from edit to add)
+      // Optional: Add logic here to reset all fields if needed
+    }
+  }, [initialData]); // Re-run effect if initialData changes
 
   const validateForm = (): boolean => {
     const newErrors: Record<string, string> = {};
@@ -80,7 +106,7 @@ const AddItemForm: React.FC<AddItemFormProps> = ({ onSave, onClose }) => {
 
   return (
     <div style={formStyle}> {/* This div acts as a basic modal container for now */}
-      <h3>Add New Stock Item</h3>
+      <h3>{isEditing ? 'Edit Stock Item' : 'Add New Stock Item'}</h3>
       <form onSubmit={handleSubmit}>
 
         {/* Acquisition Details Section (Example) */}
@@ -305,7 +331,7 @@ const AddItemForm: React.FC<AddItemFormProps> = ({ onSave, onClose }) => {
             Cancel
           </button>
           <button type="submit" style={{ padding: '8px 15px', fontWeight: 'bold' }}>
-            Save Item
+            {isEditing ? 'Update Item' : 'Save Item'}
           </button>
         </div>
 

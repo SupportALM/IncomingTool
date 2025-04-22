@@ -1,11 +1,43 @@
 import React, { useState, useRef, useEffect } from "react";
-import { StockItem, ItemStatus } from './types'; // Import the interface
+import {
+    DndContext,
+    closestCenter,
+    KeyboardSensor,
+    PointerSensor,
+    useSensor,
+    useSensors,
+    DragEndEvent,
+} from '@dnd-kit/core';
+import {
+    arrayMove,
+    SortableContext,
+    sortableKeyboardCoordinates,
+    useSortable,
+    horizontalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+import { StockItem, ItemStatus, ActivityEvent, ActivityEventType } from './types'; // Import the interface
 import AddItemForm from './AddItemForm'; // Import the form component
 import ItemDetailModal from './ItemDetailModal'; // Import the details modal
+import ReportIssueModal from './ReportIssueModal'; // Import the new modal
+import AddUpdateModal from './AddUpdateModal'; // Import the new modal
+import ResolveIssueModal from './ResolveIssueModal'; // Import the new modal
+import TableSettingsModal from './TableSettingsModal'; // Import the new modal
+
+// Remove placeholder definitions
+// const ReportIssueModal = ...
+// const AddUpdateModal = ...; // Remove this placeholder definition
+// const ResolveIssueModal = ({ onSubmit, onClose }: { onSubmit: (outcome: string, note?: string) => void, onClose: () => void }) => <div style={{position:'fixed', top:'40%', left:'40%', background:'lightgreen', border:'1px solid black', padding:20, zIndex:50}}>Resolve Issue Placeholder<button onClick={() => onSubmit(prompt('Outcome?') || 'Accepted', prompt('Notes?') || '')}>Save</button><button onClick={onClose}>Cancel</button></div>;
 
 // --- Placeholder Components (to be implemented later) ---
-const SearchBar = ({ onSearch }: { onSearch: (term: string) => void }) => (
-  <input type="text" placeholder="Search by Delivery Name or Product Name..." onChange={e => onSearch(e.target.value)} style={{ marginBottom: '1rem', padding: '0.5rem', width: '100%' }} />
+const SearchBar = ({ onSearch, inputRef }: { onSearch: (term: string) => void, inputRef?: React.RefObject<HTMLInputElement | null> }) => (
+  <input
+    ref={inputRef}
+    type="text"
+    placeholder="Search by Delivery Name or Product Name..."
+    onChange={e => onSearch(e.target.value)}
+    style={{ marginBottom: '1rem', padding: '0.5rem', width: '100%' }}
+  />
 );
 
 const FilterTabs = ({ currentFilter, onFilterChange }: { currentFilter: ItemStatus | 'All'; onFilterChange: (filter: ItemStatus | 'All') => void }) => {
@@ -56,26 +88,35 @@ const getStatusStyle = (status: ItemStatus, isLate: boolean, isFlagged?: boolean
   return { ...baseStyle, ...flaggedStyle }; // Combine base style with flagged indicator
 };
 
+// Function to create a new ActivityEvent
+const createActivityEvent = (
+    type: ActivityEventType,
+    details: ActivityEvent['details'] = {}
+): ActivityEvent => ({
+    timestamp: new Date().toISOString(),
+    type,
+    details,
+});
+
 // Function to determine available actions based on status
-const getAvailableActions = (status: ItemStatus, isFlagged?: boolean): string[] => { // Added isFlagged
+const getAvailableActions = (status: ItemStatus, isFlagged?: boolean): string[] => {
   let actions: string[] = [];
   switch (status) {
     case 'Pending Delivery':
-      actions = ['Mark as Delivered', 'Report Issue', 'View Details']; break;
+      actions = ['Mark as Delivered', 'Report Issue', 'View Details', 'Edit Item']; break;
     case 'Delivered':
-      actions = ['Archive', 'Report Issue', 'View Details']; break;
-    case 'Issue':
-      actions = ['Resolve Issue', 'Archive', 'View Details']; break;
+      actions = ['Archive', 'Report Issue', 'View Details', 'Edit Item']; break;
+    case 'Issue': // Issue-specific actions
+      actions = ['Resolve Issue', 'Add Issue Update', 'Archive', 'View Details', 'Edit Item']; break;
     case 'Late': 
-      actions = ['Mark as Delivered', 'Report Issue', 'View Details']; break;
+      actions = ['Mark as Delivered', 'Report Issue', 'View Details', 'Edit Item']; break;
     case 'Archived':
       actions = ['View Details']; break;
     default:
       actions = ['View Details']; break;
   }
-  // Add flag/unflag action (unless archived)
   if (status !== 'Archived') {
-      actions.unshift(isFlagged ? 'Unflag Item' : 'Flag Item'); // Add to beginning
+    actions.unshift(isFlagged ? 'Unflag Item' : 'Flag Item');
   }
   return actions;
 };
@@ -138,17 +179,150 @@ const ActionMenu: React.FC<ActionMenuProps> = ({ itemId, actions, onActionSelect
   );
 };
 
-// Updated StockProcessingList with correct syntax and late check
+// --- Configuration ---
+export interface ColumnConfig {
+  id: keyof StockItem | 'actions'; // Use StockItem keys + custom 'actions' key
+  label: string;
+}
+
+// Define all possible columns (excluding activityLog for direct table display)
+const ALL_COLUMNS: ColumnConfig[] = [
+  { id: 'orderDate', label: 'Order Date' },
+  { id: 'quantity', label: 'Qty' },
+  { id: 'productName', label: 'Product Name' },
+  { id: 'deliveryName', label: 'Delivery Name' },
+  { id: 'pricePerItem', label: 'Price/Item' },
+  { id: 'seller', label: 'Seller/Source' },
+  { id: 'destination', label: 'Destination' },
+  { id: 'asinSku', label: 'ASIN/SKU' },
+  { id: 'purchaseStatus', label: 'Purchase Status' },
+  { id: 'orderNumber', label: 'Order #' },
+  { id: 'currentStatus', label: 'Status' },
+  { id: 'isFlagged', label: 'Flagged' },
+  { id: 'acquisitionNotes', label: 'Acquisition Notes' },
+  { id: 'issueDescription', label: 'Issue Description' },
+  { id: 'dateDelivered', label: 'Date Delivered' },
+  { id: 'actions', label: 'Actions' },
+];
+
+// Default visible columns (keys/ids)
+const DEFAULT_VISIBLE_COLUMN_IDS: Array<ColumnConfig['id']> = [
+    'orderDate', 
+    'quantity', 
+    'productName', 
+    'deliveryName', 
+    'currentStatus', 
+    'actions',
+];
+
+const LOCAL_STORAGE_KEY_VISIBLE_COLUMNS = 'incomingTool_visibleColumns';
+
+// --- Mock Data --- (Restoring definition)
+const MOCK_STOCK_ITEMS: StockItem[] = [
+  {
+    id: '1',
+    purchaseStatus: 'Purchased',
+    deliveryName: 'eBay Batch Apr 16',
+    productName: 'Blue Widget Model X',
+    quantity: 10,
+    pricePerItem: 12.50,
+    orderNumber: '12-34567-89012',
+    orderDate: '2024-04-16',
+    seller: 'ebay_user_123',
+    destination: 'FBA Prep',
+    currentStatus: 'Pending Delivery',
+    isFlagged: false,
+    activityLog: [],
+  },
+  {
+    id: '2',
+    purchaseStatus: 'Ordered',
+    deliveryName: 'Supplier ABC Batch 3',
+    productName: 'Red T-Shirt Large',
+    quantity: 50,
+    pricePerItem: 5.00,
+    orderDate: '2024-04-10',
+    seller: 'Supplier XYZ Inc.',
+    destination: 'Local Stock Shelf A',
+    currentStatus: 'Delivered',
+    dateDelivered: '2024-04-15T10:30:00Z',
+    isFlagged: true,
+    activityLog: [],
+  },
+  {
+    id: '3',
+    purchaseStatus: 'Return Expected',
+    deliveryName: 'Jane Smith RMA 987',
+    productName: 'Green Gadget',
+    quantity: 1,
+    pricePerItem: 25.00,
+    orderDate: '2024-04-12',
+    seller: 'Jane Smith (Return)',
+    destination: 'Refurbish Pile',
+    currentStatus: 'Issue',
+    issueDescription: 'Item returned broken by customer.',
+    isFlagged: false,
+    activityLog: [],
+  },
+];
+
+// --- Draggable Header Component ---
+interface DraggableHeaderProps {
+  col: ColumnConfig;
+}
+
+const DraggableHeader: React.FC<DraggableHeaderProps> = ({ col }) => {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: col.id });
+
+  const style: React.CSSProperties = {
+    transform: CSS.Translate.toString(transform),
+    transition,
+    opacity: isDragging ? 0.8 : 1,
+    zIndex: isDragging ? 10 : 1, // Ensure dragged header is above others
+    cursor: 'move',
+    border: '1px solid #ccc',
+    padding: '8px',
+    textAlign: col.id === 'actions' ? 'center' : 'left',
+    backgroundColor: isDragging ? '#e0e0e0' : '#f2f2f2' // Highlight when dragging
+  };
+
+  return (
+    <th ref={setNodeRef} style={style} {...attributes} {...listeners}>
+      {col.label}
+    </th>
+  );
+};
+
+// Update StockProcessingList props to accept onColumnReorder
 const StockProcessingList = ({
   items,
+  visibleColumns, // Pass the ordered list of visible column configs
   onActionSelected,
-  onViewDetails
+  onViewDetails,
+  onColumnReorder // Add prop for reordering columns
 }: {
   items: StockItem[];
+  visibleColumns: ColumnConfig[];
   onActionSelected: (itemId: string, action: string) => void;
   onViewDetails: (itemId: string) => void;
+  onColumnReorder: (event: DragEndEvent) => void; // Type for dnd-kit event
 }) => {
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+
+  // dnd-kit sensors
+  const sensors = useSensors(
+    useSensor(PointerSensor),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  );
 
   const handleMenuToggle = (itemId: string) => {
     setOpenMenuId(prevId => (prevId === itemId ? null : itemId));
@@ -167,72 +341,128 @@ const StockProcessingList = ({
     handleCloseMenu();
   };
 
+  // Function to render cell content based on column ID
+  const renderCellContent = (item: StockItem, columnId: ColumnConfig['id']) => {
+    // Helper for potentially null/undefined primitives
+    const renderPrimitive = (value: string | number | boolean | null | undefined) => {
+        if (typeof value === 'string' || typeof value === 'number') {
+          return value;
+        } else if (typeof value === 'boolean') {
+          return value ? 'Yes' : 'No';
+        }
+        return '-'; // Default for null/undefined
+    };
+
+    switch (columnId) {
+        case 'isFlagged':
+            return <td key={columnId} style={{ border: '1px solid #ccc', padding: '8px', textAlign: 'center' }}>{item.isFlagged ? '🚩' : ''}</td>;
+        case 'actions': 
+            return (
+                <td 
+                  key={'actions'} 
+                  style={{ border: '1px solid #ccc', padding: '0px', textAlign: 'center', position: 'relative' }} 
+                  onClick={(e) => e.stopPropagation()} 
+                >
+                   {item.currentStatus !== 'Archived' && (
+                    <button
+                        style={{ cursor: 'pointer', border: 'none', background: 'none', fontSize: '1.2em', padding: '8px' }}
+                        title="Actions"
+                        onClick={(e) => { e.stopPropagation(); handleMenuToggle(item.id); }}
+                    >
+                        ⋮
+                    </button>
+                  )}
+                  {openMenuId === item.id && (
+                    <ActionMenu
+                        itemId={item.id}
+                        actions={getAvailableActions(item.currentStatus, item.isFlagged)}
+                        onActionSelected={handleAction}
+                        onClose={handleCloseMenu}
+                    />
+                  )}
+                </td>
+            );
+        case 'currentStatus':
+             const isLate = isItemLate(item); 
+             return (
+                 <td 
+                    key={columnId} 
+                    style={{ border: '1px solid #ccc', padding: '8px', ...getStatusStyle(item.currentStatus, isLate, item.isFlagged) }} 
+                    onClick={(e) => e.stopPropagation()}
+                 >
+                    {item.currentStatus}
+                 </td>
+             );
+         case 'quantity':
+         case 'pricePerItem':
+            const numValue = item[columnId as keyof StockItem];
+            return <td key={columnId} style={{ border: '1px solid #ccc', padding: '8px', textAlign: 'right' }}>{typeof numValue === 'number' ? numValue : '-'}</td>;
+        case 'dateDelivered': 
+        case 'orderDate':
+             const dateValue = item[columnId as keyof StockItem];
+             // Format date or show hyphen
+             const formattedDate = typeof dateValue === 'string' && dateValue ? new Date(dateValue).toLocaleDateString() : '-';
+             return <td key={columnId} style={{ border: '1px solid #ccc', padding: '8px' }}>{formattedDate}</td>; 
+        case 'acquisitionNotes':
+        case 'issueDescription':
+            // These *could* technically have other types if StockItem changes, so explicitly check for string
+            const noteValue = item[columnId];
+            return <td key={columnId} style={{ border: '1px solid #ccc', padding: '8px' }}>{typeof noteValue === 'string' ? renderPrimitive(noteValue) : '-'}</td>;
+        // Explicit cases for all other configured string/nullable columns
+        case 'productName':
+        case 'deliveryName':
+        case 'seller':
+        case 'destination':
+        case 'asinSku':
+        case 'purchaseStatus':
+        case 'orderNumber':
+            // These are expected to be string | undefined based on StockItem type
+            return <td key={columnId} style={{ border: '1px solid #ccc', padding: '8px' }}>{renderPrimitive(item[columnId])}</td>;
+        // Default case should ideally not be hit if ALL_COLUMNS is exhaustive
+        default: 
+             console.warn("Unhandled column ID in renderCellContent:", columnId);
+             return <td key={columnId} style={{ border: '1px solid #ccc', padding: '8px' }}>???</td>; 
+    }
+  };
+
   return (
     <div>
       <h4>Stock & Processing List</h4>
       <table style={{ width: '100%', borderCollapse: 'collapse', border: '1px solid #ccc' }}>
         <thead>
-            <tr style={{ backgroundColor: '#f2f2f2' }}>
-              <th style={{ border: '1px solid #ccc', padding: '8px', textAlign: 'left' }}>Order Date</th>
-              <th style={{ border: '1px solid #ccc', padding: '8px', textAlign: 'left' }}>Qty</th>
-              <th style={{ border: '1px solid #ccc', padding: '8px', textAlign: 'left' }}>Product Name</th>
-              <th style={{ border: '1px solid #ccc', padding: '8px', textAlign: 'left' }}>Delivery Name</th>
-              <th style={{ border: '1px solid #ccc', padding: '8px', textAlign: 'left' }}>Status</th>
-              <th style={{ border: '1px solid #ccc', padding: '8px', textAlign: 'center' }}>Actions</th>
-            </tr>
+          {/* Wrap header row with DndContext and SortableContext */}
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter} // Simple collision detection is fine
+            onDragEnd={onColumnReorder} // Call handler passed from ToolApp
+          >
+            <SortableContext
+              items={visibleColumns.map(col => col.id)} // Use column IDs as items
+              strategy={horizontalListSortingStrategy} // Use horizontal strategy
+            >
+              <tr style={{ backgroundColor: '#f2f2f2' }}>
+                {/* Use DraggableHeader component */}
+                {visibleColumns.map(col => (
+                   <DraggableHeader key={col.id} col={col} />
+                ))}
+              </tr>
+            </SortableContext>
+          </DndContext>
         </thead>
         <tbody>
-          {items.length > 0 ? items.map((item, index) => {
-            const isLate = isItemLate(item); // Check lateness for each item
-            return (
-              <tr 
-                key={item.id} 
-                style={{ backgroundColor: index % 2 === 0 ? '#fff' : '#f9f9f9', cursor: 'pointer' }}
-                onClick={() => onViewDetails(item.id)}
-              >
-                <td style={{ border: '1px solid #ccc', padding: '8px' }}>{item.orderDate}</td>
-                <td style={{ border: '1px solid #ccc', padding: '8px', textAlign: 'right' }}>{item.quantity}</td>
-                <td style={{ border: '1px solid #ccc', padding: '8px' }}>
-                  {item.isFlagged && <span title="Flagged" style={{ marginRight: '5px' }}>🚩</span>}
-                  {item.productName}
-                </td>
-                <td style={{ border: '1px solid #ccc', padding: '8px' }}>{item.deliveryName}</td>
-                {/* Apply status style, checking for lateness */}
-                <td 
-                  style={{ border: '1px solid #ccc', padding: '8px', ...getStatusStyle(item.currentStatus, isLate, item.isFlagged) }} 
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  {item.currentStatus}
-                </td>
-                {/* Actions Cell */}
-                <td 
-                  style={{ border: '1px solid #ccc', padding: '0px', textAlign: 'center', position: 'relative' }} 
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <button
-                    style={{ cursor: 'pointer', border: 'none', background: 'none', fontSize: '1.2em', padding: '8px' }}
-                    title="Actions"
-                    onClick={(e) => { // Need to stop propagation here too
-                      e.stopPropagation(); 
-                      handleMenuToggle(item.id); 
-                    }}
-                  >
-                    ⋮
-                  </button>
-                  {openMenuId === item.id && (
-                    <ActionMenu
-                      itemId={item.id}
-                      actions={getAvailableActions(item.currentStatus, item.isFlagged)}
-                      onActionSelected={handleAction}
-                      onClose={handleCloseMenu}
-                    />
-                  )}
-                </td>
-              </tr>
-            );
-          }) : (
+          {items.length > 0 ? items.map((item, index) => (
+            <tr
+              key={item.id}
+              style={{ backgroundColor: index % 2 === 0 ? '#fff' : '#f9f9f9', cursor: 'pointer' }}
+              onClick={() => onViewDetails(item.id)}
+            >
+              {/* Render cells based on visibleColumns */}
+              {visibleColumns.map(col => renderCellContent(item, col.id))}
+            </tr>
+          )) : (
             <tr>
-              <td colSpan={6} style={{ border: '1px solid #ccc', padding: '16px', textAlign: 'center' }}>
+              {/* Adjust colspan based on visible columns count */}
+              <td colSpan={visibleColumns.length} style={{ border: '1px solid #ccc', padding: '16px', textAlign: 'center' }}>
                 No items match the current filter.
               </td>
             </tr>
@@ -263,53 +493,6 @@ const FlagToggle = ({ isChecked, onChange }: { isChecked: boolean; onChange: (ch
   </div>
 );
 
-// --- Mock Data --- 
-const MOCK_STOCK_ITEMS: StockItem[] = [
-  {
-    id: '1',
-    purchaseStatus: 'Purchased',
-    deliveryName: 'eBay Batch Apr 16',
-    productName: 'Blue Widget Model X',
-    quantity: 10,
-    pricePerItem: 12.50,
-    orderNumber: '12-34567-89012',
-    orderDate: '2024-04-16',
-    seller: 'ebay_user_123',
-    destination: 'FBA Prep',
-    currentStatus: 'Pending Delivery',
-    isFlagged: false,
-  },
-  {
-    id: '2',
-    purchaseStatus: 'Ordered',
-    deliveryName: 'Supplier ABC Batch 3',
-    productName: 'Red T-Shirt Large',
-    quantity: 50,
-    pricePerItem: 5.00,
-    orderDate: '2024-04-10',
-    seller: 'Supplier XYZ Inc.',
-    destination: 'Local Stock Shelf A',
-    currentStatus: 'Delivered',
-    dateDelivered: '2024-04-15T10:30:00Z',
-    processorNotes: 'Verified quantity, box slightly damaged.',
-    isFlagged: true,
-  },
-  {
-    id: '3',
-    purchaseStatus: 'Return Expected',
-    deliveryName: 'Jane Smith RMA 987',
-    productName: 'Green Gadget',
-    quantity: 1,
-    pricePerItem: 25.00,
-    orderDate: '2024-04-12',
-    seller: 'Jane Smith (Return)',
-    destination: 'Refurbish Pile',
-    currentStatus: 'Issue',
-    issueDescription: 'Item returned broken by customer.',
-    isFlagged: false,
-  },
-];
-
 // --- Main Tool Component ---
 const ToolApp = () => {
   const [allItems, setAllItems] = useState<StockItem[]>(MOCK_STOCK_ITEMS);
@@ -318,6 +501,39 @@ const ToolApp = () => {
   const [selectedItemDetails, setSelectedItemDetails] = useState<StockItem | null>(null); // For View Details Modal
   const [isAddItemModalOpen, setIsAddItemModalOpen] = useState<boolean>(false); // State for modal visibility
   const [showFlaggedOnly, setShowFlaggedOnly] = useState<boolean>(false); // State for flag toggle
+  const [editingItem, setEditingItem] = useState<StockItem | null>(null); // State to hold item being edited
+  // State for new modals
+  const [reportingIssueItem, setReportingIssueItem] = useState<StockItem | null>(null);
+  const [addingUpdateItem, setAddingUpdateItem] = useState<StockItem | null>(null);
+  const [resolvingIssueItem, setResolvingIssueItem] = useState<StockItem | null>(null);
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false); // State for settings modal
+
+  // State for column configuration (order matters now)
+  const [visibleColumnIds, setVisibleColumnIds] = useState<Array<ColumnConfig['id']>>(() => {
+    try {
+      const stored = localStorage.getItem(LOCAL_STORAGE_KEY_VISIBLE_COLUMNS);
+      // Ensure stored value is an array, otherwise use default
+      const parsed = stored ? JSON.parse(stored) : DEFAULT_VISIBLE_COLUMN_IDS;
+      return Array.isArray(parsed) ? parsed : DEFAULT_VISIBLE_COLUMN_IDS;
+    } catch (error) {
+      console.error("Error reading visible columns from localStorage", error);
+      return DEFAULT_VISIBLE_COLUMN_IDS;
+    }
+  });
+  
+  // Save visible columns to localStorage whenever they change
+  useEffect(() => {
+    try {
+        localStorage.setItem(LOCAL_STORAGE_KEY_VISIBLE_COLUMNS, JSON.stringify(visibleColumnIds));
+    } catch (error) {
+        console.error("Error saving visible columns to localStorage", error);
+    }
+  }, [visibleColumnIds]);
+
+  // Derive visible columns based on IDs state (order is now determined by visibleColumnIds)
+  const visibleColumns = visibleColumnIds
+      .map(id => ALL_COLUMNS.find(col => col.id === id))
+      .filter((col): col is ColumnConfig => col !== undefined); // Filter out undefined if an ID becomes invalid
 
   // Update filtering logic to include flag toggle
   const filteredItems = allItems.filter(item => {
@@ -353,62 +569,179 @@ const ToolApp = () => {
     setCurrentFilter(filter);
   };
 
-  // --- Action Handling Logic ---
+  // Centralized function to update item state and add log entry
+  const updateItemAndLog = (itemId: string, changes: Partial<StockItem>, event: ActivityEvent) => {
+    setAllItems(prevItems =>
+      prevItems.map(item =>
+        item.id === itemId
+          ? { 
+              ...item, 
+              ...changes, // Apply direct changes (like status, flag)
+              activityLog: [...(item.activityLog || []), event] // Append event
+            }
+          : item
+      )
+    );
+  };
+
+  // Update handleItemAction to dispatch to specific handlers or generic updates
   const handleItemAction = (itemId: string, action: string) => {
     console.log(`Action: ${action} on item ${itemId}`);
+    const item = allItems.find(i => i.id === itemId);
+    if (!item) return;
 
-    setAllItems(prevItems =>
-      prevItems.map(item => {
-        if (item.id === itemId) {
-          let updatedStatus = item.currentStatus;
-          let updatedDateDelivered = item.dateDelivered;
-          let updatedIssueDescription = item.issueDescription;
-          let updatedProcessorNotes = item.processorNotes;
-          let updatedFlag = item.isFlagged;
-          
-          // Determine new state based on action
-          switch (action) {
-            case 'Mark as Delivered':
-              updatedStatus = 'Delivered';
-              updatedDateDelivered = new Date().toISOString(); // Record delivery time
-              // Maybe add a default processor note?
-              // updatedProcessorNotes = item.processorNotes ? item.processorNotes + "; Delivered" : "Delivered";
-              break;
-            case 'Report Issue':
-              updatedStatus = 'Issue';
-              // In a real app, you'd likely open a modal here to get the issue description
-              updatedIssueDescription = prompt("Please describe the issue:", item.issueDescription || '') || item.issueDescription;
-              break;
-            case 'Resolve Issue':
-              // Could prompt for new status (e.g., Delivered, Archived)
-              // For simplicity, let's mark it as Delivered for now
-              updatedStatus = 'Delivered'; 
-              updatedIssueDescription = undefined; // Clear issue description
-              updatedProcessorNotes = item.processorNotes ? item.processorNotes + "; Issue Resolved" : "Issue Resolved";
-              break;
-            case 'Archive':
-              updatedStatus = 'Archived';
-              break;
-            case 'Flag Item':
-              updatedFlag = true;
-              break;
-            case 'Unflag Item':
-              updatedFlag = false;
-              break;
-            // No case for 'View Details' as it's handled separately
-          }
-          return { 
-              ...item, 
-              currentStatus: updatedStatus,
-              dateDelivered: updatedDateDelivered,
-              issueDescription: updatedIssueDescription,
-              processorNotes: updatedProcessorNotes,
-              isFlagged: updatedFlag // Update flag status
-           }; 
+    switch (action) {
+      case 'Edit Item':
+        setEditingItem(item);
+        setIsAddItemModalOpen(true);
+        break;
+      case 'Report Issue':
+        setReportingIssueItem(item);
+        break;
+      case 'Add Issue Update':
+        setAddingUpdateItem(item);
+        break;
+      case 'Resolve Issue':
+        setResolvingIssueItem(item);
+        break;
+      case 'Flag Item':
+      case 'Unflag Item':
+        const newFlagState = action === 'Flag Item';
+        updateItemAndLog(itemId, 
+          { isFlagged: newFlagState }, 
+          createActivityEvent('FLAG_TOGGLED', { isFlagged: newFlagState })
+        );
+        break;
+      case 'Mark as Delivered':
+        if (item.currentStatus !== 'Delivered') {
+          updateItemAndLog(itemId,
+            { currentStatus: 'Delivered', dateDelivered: new Date().toISOString() },
+            createActivityEvent('STATUS_CHANGED', { previousStatus: item.currentStatus, newStatus: 'Delivered' })
+          );
         }
-        return item;
-      })
+        break;
+      case 'Archive':
+         if (item.currentStatus !== 'Archived') {
+          updateItemAndLog(itemId, 
+            { currentStatus: 'Archived' },
+            createActivityEvent('STATUS_CHANGED', { previousStatus: item.currentStatus, newStatus: 'Archived' })
+          );
+         }
+        break;
+      // Default case for actions handled elsewhere or needing no state change here (like View Details)
+    }
+  };
+
+  // Handler for saving the initial issue report
+  const handleSaveReportIssue = (description: string) => {
+    if (!reportingIssueItem) return;
+    const itemId = reportingIssueItem.id;
+    const previousStatus = reportingIssueItem.currentStatus;
+    // Add ISSUE_REPORTED event
+    const reportEvent = createActivityEvent('ISSUE_REPORTED', { issueDescription: description });
+    // Add STATUS_CHANGED event
+    const statusEvent = createActivityEvent('STATUS_CHANGED', { previousStatus, newStatus: 'Issue' });
+    
+    setAllItems(prevItems =>
+        prevItems.map(item =>
+            item.id === itemId
+            ? { 
+                ...item, 
+                currentStatus: 'Issue',
+                issueDescription: description, // Set initial description
+                activityLog: [...(item.activityLog || []), reportEvent, statusEvent]
+              }
+            : item
+        )
     );
+    setReportingIssueItem(null); // Close modal
+  };
+  
+  // Handler for adding an issue update note
+  const handleSaveIssueUpdate = (note: string) => {
+      if (!addingUpdateItem) return;
+      updateItemAndLog(
+          addingUpdateItem.id, 
+          {}, // No direct state change needed for just adding a note
+          createActivityEvent('ISSUE_UPDATE_ADDED', { note })
+      );
+      setAddingUpdateItem(null); // Close modal
+  };
+
+  // Handler for resolving an issue
+  const handleSaveResolveIssue = (outcome: string, note?: string) => {
+      if (!resolvingIssueItem) return;
+      const itemId = resolvingIssueItem.id;
+      const previousStatus = resolvingIssueItem.currentStatus;
+      // Determine new status based on outcome
+      let newStatus: ItemStatus = 'Delivered'; // Default
+      if (outcome === 'Returned to Supplier' || outcome === 'Disposed Of') {
+          newStatus = 'Archived';
+      }
+      // Could add more outcomes mapping to statuses
+      
+      const resolveEvent = createActivityEvent('ISSUE_RESOLVED', { resolutionOutcome: outcome, note });
+      const statusEvent = createActivityEvent('STATUS_CHANGED', { previousStatus, newStatus });
+
+      setAllItems(prevItems =>
+          prevItems.map(item =>
+              item.id === itemId
+              ? { 
+                  ...item, 
+                  currentStatus: newStatus,
+                  // Optionally clear initial issueDescription now?
+                  // issueDescription: undefined, 
+                  activityLog: [...(item.activityLog || []), resolveEvent, statusEvent]
+                }
+              : item
+          )
+      );
+      setResolvingIssueItem(null); // Close modal
+  };
+
+  // Update handleSaveItem for add/edit logging
+  const handleSaveItem = (itemData: Omit<StockItem, 'id' | 'currentStatus' | 'dateDelivered' | 'activityLog'> & { isFlagged: boolean }) => {
+    if (editingItem) {
+      // Log EDIT event - determine changed fields
+      const changedFields = (Object.keys(itemData) as Array<keyof typeof itemData>).filter(key => 
+          // Check if key exists on editingItem and if values differ
+          editingItem.hasOwnProperty(key) && editingItem[key] !== itemData[key]
+      );
+
+      // Manually check isFlagged separately as it might not be in itemData type strictly but is passed
+      if (editingItem.isFlagged !== itemData.isFlagged) {
+         if (!changedFields.includes('isFlagged' as any)) { // Avoid duplicates if isFlagged was already part of itemData keys
+              changedFields.push('isFlagged' as any); // Cast to any needed here due to type strictness
+         }
+      }
+       
+      const editEvent = createActivityEvent('EDITED', { changedFields: changedFields.length > 0 ? changedFields : undefined });
+      
+      setAllItems(prevItems => 
+        prevItems.map(item => 
+          item.id === editingItem.id 
+            ? { 
+                ...editingItem, 
+                ...itemData,
+                activityLog: [...(item.activityLog || []), editEvent] // Add edit event
+              } 
+            : item
+        )
+      );
+      console.log('Updated item:', { ...editingItem, ...itemData });
+    } else {
+      // Log CREATED event
+      const createdEvent = createActivityEvent('CREATED');
+      const newItem: StockItem = {
+        ...itemData,
+        id: Date.now().toString(),
+        currentStatus: 'Pending Delivery',
+        activityLog: [createdEvent] // Start log with created event
+      };
+      setAllItems(prevItems => [newItem, ...prevItems]);
+      console.log('Saved new item:', newItem);
+    }
+    handleCloseFormModal();
   };
 
   const handleViewDetails = (itemId: string) => {
@@ -425,21 +758,94 @@ const ToolApp = () => {
     setIsAddItemModalOpen(true); // Open the modal
   };
 
-  const handleCloseAddItemModal = () => {
-    setIsAddItemModalOpen(false); // Close the modal
+  const handleCloseFormModal = () => {
+    setIsAddItemModalOpen(false);
+    setEditingItem(null); // Clear editing state when closing
   };
 
-  const handleSaveNewItem = (newItemData: Omit<StockItem, 'id' | 'currentStatus' | 'dateDelivered' | 'processorNotes' | 'issueDescription'> & { isFlagged: boolean }) => {
-    const newItem: StockItem = {
-      ...newItemData,
-      id: Date.now().toString(), // Simple unique ID for now
-      currentStatus: 'Pending Delivery', // Default status for new items
-      isFlagged: newItemData.isFlagged // Save flag from form
-    };
-    setAllItems(prevItems => [newItem, ...prevItems]); // Add to the beginning of the list
-    handleCloseAddItemModal(); // Close the modal after saving
-    console.log('Saved new item:', newItem); // Logging
+  // Handler for column drag-and-drop reordering
+  const handleColumnDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+
+    if (over && active.id !== over.id) {
+      setVisibleColumnIds((currentIds) => {
+        const oldIndex = currentIds.indexOf(active.id as ColumnConfig['id']);
+        const newIndex = currentIds.indexOf(over.id as ColumnConfig['id']);
+        // Use arrayMove to update the order
+        return arrayMove(currentIds, oldIndex, newIndex);
+      });
+    }
   };
+
+  // Handler for saving column visibility changes from modal
+  const handleSaveColumnSettings = (idsFromModal: Array<ColumnConfig['id']>) => {
+    setVisibleColumnIds(currentVisibleIds => {
+        const modalIdSet = new Set(idsFromModal);
+
+        // 1. Filter current IDs to keep only those still checked in the modal (preserves order)
+        const keptOrderedIds = currentVisibleIds.filter(id => modalIdSet.has(id));
+
+        // 2. Find IDs that are in the modal list but *not* in the current visible list (newly checked)
+        const newlyAddedIds = idsFromModal.filter(id => !currentVisibleIds.includes(id));
+
+        // 3. Combine the kept ordered IDs with the newly added ones
+        const newVisibleOrder = [...keptOrderedIds, ...newlyAddedIds];
+
+        // Ensure 'actions' column is always present if it was somehow removed (optional safeguard)
+        // if (!newVisibleOrder.includes('actions') && ALL_COLUMNS.some(c => c.id === 'actions')) {
+        //     newVisibleOrder.push('actions');
+        // }
+
+        return newVisibleOrder;
+    });
+    setIsSettingsModalOpen(false);
+  };
+
+  // Ref for search input
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't trigger shortcuts if typing in an input or textarea
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement).isContentEditable) return;
+      if (isAddItemModalOpen || isSettingsModalOpen || selectedItemDetails || reportingIssueItem || addingUpdateItem || resolvingIssueItem) {
+        // Only allow Escape to close modals
+        if (e.key === 'Escape') {
+          if (isAddItemModalOpen) setIsAddItemModalOpen(false);
+          if (isSettingsModalOpen) setIsSettingsModalOpen(false);
+          if (selectedItemDetails) setSelectedItemDetails(null);
+          if (reportingIssueItem) setReportingIssueItem(null);
+          if (addingUpdateItem) setAddingUpdateItem(null);
+          if (resolvingIssueItem) setResolvingIssueItem(null);
+        }
+        return;
+      }
+      switch (e.key) {
+        case '/':
+          e.preventDefault();
+          searchInputRef.current?.focus();
+          break;
+        case 'a':
+        case 'A':
+          setIsAddItemModalOpen(true);
+          break;
+        case 'c':
+        case 'C':
+          setIsSettingsModalOpen(true);
+          break;
+        case 'f':
+        case 'F':
+          setShowFlaggedOnly(v => !v);
+          break;
+        default:
+          break;
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isAddItemModalOpen, isSettingsModalOpen, selectedItemDetails, reportingIssueItem, addingUpdateItem, resolvingIssueItem]);
 
   return (
     <div style={{ padding: 24 }}> {/* Removed border from original template */}
@@ -449,21 +855,31 @@ const ToolApp = () => {
       <AddItemButton onClick={handleAddItem} />
 
       {/* Search and Filter Controls */}
-      <SearchBar onSearch={handleSearch} />
+      <SearchBar onSearch={handleSearch} inputRef={searchInputRef} />
       {/* Container for Filters and Flag Toggle */}
        <div style={{ display: 'flex', alignItems: 'center', marginBottom: '1rem' }}>
          <FilterTabs currentFilter={currentFilter} onFilterChange={handleFilterChange} />
          <FlagToggle isChecked={showFlaggedOnly} onChange={setShowFlaggedOnly} /> 
+         {/* Add Table Settings Button */}
+         <button 
+            onClick={() => setIsSettingsModalOpen(true)} 
+            style={{ marginLeft: 'auto', padding: '5px 10px' }} 
+            title="Configure Table Columns"
+         >
+             ⚙️ Columns
+         </button>
        </div>
       
       {/* Stock List Display */}
       <StockProcessingList 
         items={filteredItems} 
+        visibleColumns={visibleColumns} // Pass derived visible columns
         onActionSelected={handleItemAction} 
         onViewDetails={handleViewDetails}
+        onColumnReorder={handleColumnDragEnd} // Pass the drag handler
       />
       
-      {/* Render Add Item Form conditionally (basic modal placeholder) */}
+      {/* Render Add/Edit Item Form Modal */}
       {isAddItemModalOpen && (
          <div style={{ 
             position: 'fixed', 
@@ -478,8 +894,9 @@ const ToolApp = () => {
             zIndex: 20 
           }}> {/* Basic overlay */}
           <AddItemForm 
-            onSave={handleSaveNewItem} 
-            onClose={handleCloseAddItemModal} 
+            onSave={handleSaveItem} // Use combined save handler
+            onClose={handleCloseFormModal} // Use combined close handler
+            initialData={editingItem} // Pass item to edit (null if adding)
           />
         </div>
       )}
@@ -491,8 +908,40 @@ const ToolApp = () => {
           onClose={handleCloseDetailModal} 
         />
       )}
+
+      {/* New Modals for Issue Handling */}
+      {reportingIssueItem && (
+        <ReportIssueModal 
+            item={reportingIssueItem} // Pass the item
+            onSubmit={handleSaveReportIssue} 
+            onClose={() => setReportingIssueItem(null)} 
+        />
+      )}
+      {addingUpdateItem && (
+        <AddUpdateModal 
+            item={addingUpdateItem} // Pass the item context
+            onSubmit={handleSaveIssueUpdate} 
+            onClose={() => setAddingUpdateItem(null)} 
+        />
+      )}
+       {resolvingIssueItem && (
+        <ResolveIssueModal 
+            item={resolvingIssueItem} // Pass the item
+            onSubmit={handleSaveResolveIssue} 
+            onClose={() => setResolvingIssueItem(null)} 
+        />
+      )}
+
+      {/* Render Table Settings Modal */}
+      <TableSettingsModal
+        isOpen={isSettingsModalOpen}
+        onClose={() => setIsSettingsModalOpen(false)}
+        allColumns={ALL_COLUMNS}
+        initialVisibleColumns={visibleColumns} // Pass current derived configs
+        onSave={handleSaveColumnSettings} // Handler updates visibleColumnIds state
+      />
     </div>
   );
 };
 
-export default ToolApp; 
+export default ToolApp;

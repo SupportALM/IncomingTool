@@ -1,5 +1,5 @@
 import React from 'react';
-import { StockItem } from './types';
+import { StockItem, ActivityEvent } from './types';
 
 interface ItemDetailModalProps {
   item: StockItem;
@@ -12,6 +12,32 @@ const formatValue = (value: string | number | undefined | null, prefix = '', suf
     return <span style={{ color: '#888' }}>N/A</span>; // Indicate if not available
   }
   return `${prefix}${value}${suffix}`;
+};
+
+// Helper function to format an activity event into a readable string
+const formatActivityEvent = (event: ActivityEvent): string => {
+  const time = new Date(event.timestamp).toLocaleString();
+  switch (event.type) {
+    case 'CREATED':
+      return `${time}: Item Created`;
+    case 'EDITED':
+      const fields = event.details.changedFields?.join(', ') || 'details';
+      return `${time}: Item Edited (${fields} changed)`;
+    case 'STATUS_CHANGED':
+      return `${time}: Status changed from ${event.details.previousStatus || '?'} to ${event.details.newStatus || '?'}`;
+    case 'FLAG_TOGGLED':
+      return `${time}: Item ${event.details.isFlagged ? 'Flagged' : 'Unflagged'}`;
+    case 'ISSUE_REPORTED':
+      return `${time}: Issue Reported: ${event.details.issueDescription || ''}`;
+    case 'ISSUE_UPDATE_ADDED':
+      return `${time}: Issue Update Added: ${event.details.note || ''}`;
+    case 'ISSUE_RESOLVED':
+      return `${time}: Issue Resolved (Outcome: ${event.details.resolutionOutcome || 'N/A'}${event.details.note ? ` - Note: ${event.details.note}` : ''}`;
+    case 'NOTE_ADDED': // For general notes in future
+      return `${time}: Note Added: ${event.details.note || ''}`;
+    default:
+      return `${time}: Unknown action`;
+  }
 };
 
 const ItemDetailModal: React.FC<ItemDetailModalProps> = ({ item, onClose }) => {
@@ -51,6 +77,19 @@ const ItemDetailModal: React.FC<ItemDetailModalProps> = ({ item, onClose }) => {
     display: 'inline-block',
     minWidth: '150px',
     marginRight: '10px',
+  };
+
+  const historySectionStyle: React.CSSProperties = {
+    marginTop: '20px',
+    paddingTop: '15px',
+    borderTop: '1px solid #ccc',
+  };
+
+  const historyItemStyle: React.CSSProperties = {
+    marginBottom: '8px',
+    paddingBottom: '8px',
+    borderBottom: '1px dashed #eee',
+    fontSize: '0.9em',
   };
 
   return (
@@ -109,6 +148,19 @@ const ItemDetailModal: React.FC<ItemDetailModalProps> = ({ item, onClose }) => {
         <div style={{ ...detailRowStyle, borderBottom: 'none' }}> {/* Remove border on last item */}
           <span style={labelStyle}>Issue Description:</span> {formatValue(item.issueDescription)}
         </div>
+
+        {/* --- History Section --- */}
+        {(item.activityLog && item.activityLog.length > 0) && (
+          <div style={historySectionStyle}>
+            <h4>History / Activity Log</h4>
+            {/* Display newest first */}
+            {[...(item.activityLog)].reverse().map((event, index) => (
+              <div key={`${event.timestamp}-${index}`} style={historyItemStyle}>
+                {formatActivityEvent(event)}
+              </div>
+            ))}
+          </div>
+        )}
 
         <div style={{ marginTop: '20px', textAlign: 'right' }}>
           <button onClick={onClose} style={{ padding: '8px 15px', fontWeight: 'bold' }}>

@@ -765,17 +765,14 @@ module.exports = function (webpackEnv) {
           './ToolApp': './src/ToolApp',
         },
         shared: {
-          // Share react & react-dom, ensuring only ONE copy is loaded in the shell
-          // Singleton is crucial here.
-          // Eager can be used but may slightly increase initial load time of the shell.
-          // react: {         // <-- REMOVED
-          //   singleton: true,
-          //   requiredVersion: dependencies.react,
-          // },
-          // "react-dom": {   // <-- REMOVED
-          //   singleton: true,
-          //   requiredVersion: dependencies["react-dom"],
-          // },
+          react: {
+            singleton: true,
+            requiredVersion: dependencies.react,
+          },
+          "react-dom": {
+            singleton: true,
+            requiredVersion: dependencies["react-dom"],
+          },
           // Add any other libraries you want shared between the shell and remotes
           // Be sure the versions match exactly!
           // e.g., some_ui_library: { singleton: true, requiredVersion: dependencies.some_ui_library }
